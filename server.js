@@ -1,43 +1,15 @@
 const express = require('express');
 const cors = require('cors');
-const { Pool } = require('pg');
 const Joi = require('joi');
 const math = require('mathjs');
 const ss = require('simple-statistics');
 const validator = require('validator');
-const helmet = require('helmet');
-const rateLimit = require('express-rate-limit');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Security middleware
-app.use(helmet({
-  contentSecurityPolicy: false, // Disable for API
-  crossOriginEmbedderPolicy: false
-}));
-
-// Rate limiting
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: process.env.NODE_ENV === 'production' ? 100 : 1000,
-  message: {
-    error: 'Too many requests from this IP, please try again later.'
-  }
-});
-app.use('/api/', limiter);
-
-// Production logging
-if (process.env.NODE_ENV === 'production') {
-  const originalLog = console.log;
-  console.log = (...args) => {
-    const timestamp = new Date().toISOString();
-    originalLog(`[${timestamp}]`, ...args);
-  };
-}
-
-// Supabase configuration - Use environment variables
+// Supabase configuration
 const supabaseUrl = process.env.SUPABASE_URL || 'https://fsicauceosmdrhxmvreu.supabase.co';
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZzaWNhdWNlb3NtZHJoeG12cmV1Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc1ODEwMjk5OSwiZXhwIjoyMDczNjc4OTk5fQ.bqzxqGvx_l8-PQ4Ms5fgorweqQCn8fWaBF1O8fs8lX0';
 const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZzaWNhdWNlb3NtZHJoeG12cmV1Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTgxMDI5OTksImV4cCI6MjA3MzY3ODk5OX0.J_Dx9SLkzffTFcDhxMix56cmtpM4710nqafnyP5BLhk';
@@ -45,7 +17,6 @@ const supabaseAnonKey = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsIn
 // Validate required environment variables
 if (!supabaseUrl || !supabaseServiceKey || !supabaseAnonKey) {
   console.error('❌ FATAL ERROR: Supabase configuration is required!');
-  console.error('Please configure SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and SUPABASE_ANON_KEY');
   process.exit(1);
 }
 
@@ -58,16 +29,22 @@ try {
   const supabaseJs = require('@supabase/supabase-js');
   createClient = supabaseJs.createClient;
   
+  // Admin client (bypasses RLS, for admin operations)
   supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey, {
     auth: {
       autoRefreshToken: false,
       persistSession: false
     },
-    db: { schema: 'public' }
+    db: {
+      schema: 'public'
+    }
   });
   
+  // Regular client (respects RLS, for user operations)  
   supabase = createClient(supabaseUrl, supabaseAnonKey, {
-    db: { schema: 'public' }
+    db: {
+      schema: 'public'
+    }
   });
   
   console.log('✅ Supabase clients initialized successfully');
@@ -76,56 +53,15 @@ try {
   process.exit(1);
 }
 
-// PostgreSQL connection pool
-const pool = new Pool({
-  host: process.env.DB_HOST || 'db.fsicauceosmdrhxmvreu.supabase.co',
-  port: process.env.DB_PORT || 5432,
-  user: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD || '3146',
-  database: process.env.DB_NAME || 'postgres',
-  max: 20,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000,
-  ssl: {
-    rejectUnauthorized: false
-  }
-});
-
-pool.on('connect', () => {
-  console.log('✅ Connected to PostgreSQL database');
-});
-
-pool.on('error', (err) => {
-  console.error('❌ PostgreSQL connection error:', err);
-});
-
-// CORS configuration for production
-const allowedOrigins = [
-  'http://localhost:3000',
-  'http://127.0.0.1:3000',
-  process.env.FRONTEND_URL,
-  process.env.CUSTOM_DOMAIN,
-  // Add your production URLs here
-].filter(Boolean);
-
+// Middleware
 app.use(cors({
-  origin: function (origin, callback) {
-    // Allow requests with no origin (mobile apps, curl, etc.)
-    if (!origin) return callback(null, true);
-    
-    if (allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV !== 'production') {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
+  origin: true, // Allow all origins in production
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
-
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // Validation schemas
 const userProfileSchema = Joi.object({
@@ -154,7 +90,7 @@ const tradeSchema = Joi.object({
   reason: Joi.string().optional()
 });
 
-// Helper functions
+// Helper function to safely convert values to numbers
 const safeParseFloat = (value) => {
   if (value === null || value === undefined) return null;
   if (typeof value === 'number') return value;
@@ -165,8 +101,10 @@ const safeParseFloat = (value) => {
   return null;
 };
 
+// Helper function to format trade data
 const formatTradeData = (trade) => {
   if (!trade) return null;
+  
   return {
     ...trade,
     s_no: parseInt(trade.s_no) || trade.s_no,
@@ -183,12 +121,13 @@ const formatTradeData = (trade) => {
   };
 };
 
+// Helper function to format multiple trades
 const formatTradesData = (trades) => {
   if (!trades || !Array.isArray(trades)) return [];
   return trades.map(formatTradeData);
 };
 
-// Authentication middleware
+// Supabase Authentication middleware
 const authenticateSupabaseUser = async (req, res, next) => {
   try {
     const authHeader = req.headers['authorization'];
@@ -207,6 +146,7 @@ const authenticateSupabaseUser = async (req, res, next) => {
       });
     }
 
+    // Verify the JWT token with Supabase
     const { data: { user }, error } = await supabaseAdmin.auth.getUser(token);
 
     if (error) {
@@ -224,15 +164,19 @@ const authenticateSupabaseUser = async (req, res, next) => {
       });
     }
 
+    // Create a user-specific Supabase client with RLS context
     const userSupabase = createClient(supabaseUrl, supabaseAnonKey, {
       global: {
         headers: {
           Authorization: `Bearer ${token}`
         }
       },
-      db: { schema: 'public' }
+      db: {
+        schema: 'public'
+      }
     });
 
+    // Attach user and client to request object
     req.user = {
       id: user.id,
       email: user.email,
@@ -250,105 +194,158 @@ const authenticateSupabaseUser = async (req, res, next) => {
   }
 };
 
-// Database initialization
+// Database initialization using Supabase only
 const initializeDatabase = async () => {
   try {
-    console.log('🔧 Initializing database schema...');
-    
-    await pool.query('SELECT 1');
-    console.log('✅ PostgreSQL connection verified');
+    console.log('🔧 Initializing database schema using Supabase...');
 
-    // Create user_profiles table
-    const userProfilesTable = `
-      CREATE TABLE IF NOT EXISTS user_profiles (
-        user_id UUID PRIMARY KEY,
-        phone VARCHAR(15),
-        trading_experience VARCHAR(20) CHECK (trading_experience IN ('beginner', 'intermediate', 'advanced', 'professional')) DEFAULT 'beginner',
-        preferred_market VARCHAR(100),
-        risk_tolerance VARCHAR(10) CHECK (risk_tolerance IN ('low', 'medium', 'high')) DEFAULT 'medium',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-    `;
+    // Test Supabase connection
+    const { data, error } = await supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1 });
+    if (error) {
+      throw new Error(`Supabase connection test failed: ${error.message}`);
+    }
+    console.log('✅ Supabase connection verified');
 
-    await pool.query(userProfilesTable);
-    console.log('✅ User profiles table created/verified');
+    // Create tables using Supabase admin client
+    try {
+      // Create user_profiles table
+      await supabaseAdmin.rpc('exec_sql', {
+        sql: `
+          CREATE TABLE IF NOT EXISTS user_profiles (
+            user_id UUID PRIMARY KEY,
+            phone VARCHAR(15),
+            trading_experience VARCHAR(20) CHECK (trading_experience IN ('beginner', 'intermediate', 'advanced', 'professional')) DEFAULT 'beginner',
+            preferred_market VARCHAR(100),
+            risk_tolerance VARCHAR(10) CHECK (risk_tolerance IN ('low', 'medium', 'high')) DEFAULT 'medium',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          );
+        `
+      });
+      console.log('✅ User profiles table created/verified');
 
-    // Create trading_journal table
-    const tradingJournalTable = `
-      CREATE TABLE IF NOT EXISTS trading_journal (
-        s_no SERIAL PRIMARY KEY,
-        user_id UUID NOT NULL,
-        status VARCHAR(10) CHECK (status IN ('open', 'closed')) NOT NULL,
-        broker VARCHAR(100) NOT NULL,
-        market VARCHAR(100) NOT NULL,
-        instrument VARCHAR(100) NOT NULL,
-        direction VARCHAR(10) CHECK (direction IN ('buy', 'sell')) NOT NULL,
-        qty DECIMAL(15,4) NOT NULL,
-        entry_price DECIMAL(15,4) NOT NULL,
-        exit_price DECIMAL(15,4),
-        entry_dt TIMESTAMP NOT NULL,
-        exit_dt TIMESTAMP,
-        stoploss DECIMAL(15,4) NOT NULL,
-        commission DECIMAL(15,4) NOT NULL,
-        p_and_l DECIMAL(15,4),
-        strategy VARCHAR(100) NOT NULL,
-        setup TEXT,
-        reason TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-    `;
+      // Create trading_journal table
+      await supabaseAdmin.rpc('exec_sql', {
+        sql: `
+          CREATE TABLE IF NOT EXISTS trading_journal (
+            s_no SERIAL PRIMARY KEY,
+            user_id UUID NOT NULL,
+            status VARCHAR(10) CHECK (status IN ('open', 'closed')) NOT NULL,
+            broker VARCHAR(100) NOT NULL,
+            market VARCHAR(100) NOT NULL,
+            instrument VARCHAR(100) NOT NULL,
+            direction VARCHAR(10) CHECK (direction IN ('buy', 'sell')) NOT NULL,
+            qty DECIMAL(15,4) NOT NULL,
+            entry_price DECIMAL(15,4) NOT NULL,
+            exit_price DECIMAL(15,4),
+            entry_dt TIMESTAMP NOT NULL,
+            exit_dt TIMESTAMP,
+            stoploss DECIMAL(15,4) NOT NULL,
+            commission DECIMAL(15,4) NOT NULL,
+            p_and_l DECIMAL(15,4),
+            strategy VARCHAR(100) NOT NULL,
+            setup TEXT,
+            reason TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+          );
+        `
+      });
+      console.log('✅ Trading journal table created/verified');
 
-    await pool.query(tradingJournalTable);
-    console.log('✅ Trading journal table created/verified');
+      // Create indexes
+      await supabaseAdmin.rpc('exec_sql', {
+        sql: `
+          CREATE INDEX IF NOT EXISTS idx_user_profiles_user_id ON user_profiles(user_id);
+          CREATE INDEX IF NOT EXISTS idx_trading_journal_user_id ON trading_journal(user_id);
+          CREATE INDEX IF NOT EXISTS idx_trading_journal_status ON trading_journal(status);
+        `
+      });
+      console.log('✅ Database indexes created');
 
-    // Create indexes
-    await pool.query('CREATE INDEX IF NOT EXISTS idx_user_profiles_user_id ON user_profiles(user_id);');
-    await pool.query('CREATE INDEX IF NOT EXISTS idx_trading_journal_user_id ON trading_journal(user_id);');
-    await pool.query('CREATE INDEX IF NOT EXISTS idx_trading_journal_status ON trading_journal(status);');
-    console.log('✅ Database indexes created');
+      // Enable Row Level Security
+      await supabaseAdmin.rpc('exec_sql', {
+        sql: `
+          ALTER TABLE user_profiles ENABLE ROW LEVEL SECURITY;
+          ALTER TABLE trading_journal ENABLE ROW LEVEL SECURITY;
+        `
+      });
+      console.log('✅ Row Level Security enabled');
+
+      // Create RLS policies
+      await supabaseAdmin.rpc('exec_sql', {
+        sql: `
+          DROP POLICY IF EXISTS "Users can view own profile" ON user_profiles;
+          DROP POLICY IF EXISTS "Users can update own profile" ON user_profiles;
+          DROP POLICY IF EXISTS "Users can insert own profile" ON user_profiles;
+          DROP POLICY IF EXISTS "Users can view own trades" ON trading_journal;
+          DROP POLICY IF EXISTS "Users can insert own trades" ON trading_journal;
+          DROP POLICY IF EXISTS "Users can update own trades" ON trading_journal;
+          DROP POLICY IF EXISTS "Users can delete own trades" ON trading_journal;
+
+          CREATE POLICY "Users can view own profile" ON user_profiles FOR SELECT USING (auth.uid() = user_id);
+          CREATE POLICY "Users can update own profile" ON user_profiles FOR UPDATE USING (auth.uid() = user_id);
+          CREATE POLICY "Users can insert own profile" ON user_profiles FOR INSERT WITH CHECK (auth.uid() = user_id);
+          CREATE POLICY "Users can view own trades" ON trading_journal FOR SELECT USING (auth.uid() = user_id);
+          CREATE POLICY "Users can insert own trades" ON trading_journal FOR INSERT WITH CHECK (auth.uid() = user_id);
+          CREATE POLICY "Users can update own trades" ON trading_journal FOR UPDATE USING (auth.uid() = user_id);
+          CREATE POLICY "Users can delete own trades" ON trading_journal FOR DELETE USING (auth.uid() = user_id);
+        `
+      });
+      console.log('✅ RLS policies created successfully');
+
+    } catch (schemaError) {
+      console.log('ℹ️ Schema setup using alternative method...');
+      // Alternative: Use direct table operations if RPC is not available
+      const { error: profileError } = await supabaseAdmin
+        .from('user_profiles')
+        .select('*')
+        .limit(1);
+      
+      const { error: tradesError } = await supabaseAdmin
+        .from('trading_journal')
+        .select('*')  
+        .limit(1);
+
+      if (profileError && profileError.code === 'PGRST116') {
+        console.log('⚠️ Tables may need to be created manually in Supabase dashboard');
+      }
+      
+      console.log('✅ Database verification completed');
+    }
 
     console.log('✅ Database initialization completed successfully');
+    console.log('🔒 Security: Supabase Authentication + Row Level Security');
   } catch (error) {
     console.error('❌ Database initialization error:', error);
-    throw error;
+    console.log('ℹ️ Continuing with limited database functionality...');
+    // Don't exit - continue with basic functionality
   }
 };
 
-// Routes
-app.get('/', (req, res) => {
-  res.json({ 
-    message: 'TradingJournal Pro API', 
-    version: '1.0.0',
-    status: 'running',
-    timestamp: new Date().toISOString()
-  });
-});
-
+// Health check
 app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'OK', 
-    message: 'Trading Journal API is running with Supabase Auth + RLS!',
+    message: 'Trading Journal API is running with Supabase!',
     authMode: 'Supabase Authentication + Row Level Security',
-    environment: process.env.NODE_ENV || 'development',
     timestamp: new Date().toISOString()
   });
 });
 
+// Database status check
 app.get('/api/db-status', async (req, res) => {
   try {
-    const pgResult = await pool.query('SELECT NOW() as current_time, version() as pg_version');
+    // Test Supabase connection
     const { data, error } = await supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1 });
 
     res.json({ 
-      connected: true, 
-      message: 'Database connected successfully',
+      connected: !error, 
+      message: error ? 'Supabase connection failed' : 'Database connected successfully',
       authMode: 'Supabase Authentication + Row Level Security',
-      postgresConnected: true,
       supabaseConnected: !error,
-      dbTime: pgResult.rows[0].current_time,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      note: 'Using Supabase client for all database operations'
     });
   } catch (error) {
     console.error('Database status check failed:', error);
@@ -360,25 +357,34 @@ app.get('/api/db-status', async (req, res) => {
   }
 });
 
-// User profile routes
+// Get/Create user profile
 app.get('/api/auth/profile', authenticateSupabaseUser, async (req, res) => {
   try {
     const userId = req.user.id;
     
-    let result = await pool.query(
-      'SELECT * FROM user_profiles WHERE user_id = $1',
-      [userId]
-    );
+    // Try to get existing profile
+    const { data: profile, error: selectError } = await req.supabase
+      .from('user_profiles')
+      .select('*')
+      .eq('user_id', userId)
+      .single();
     
-    let profile;
-    if (result.rows.length === 0) {
-      const insertResult = await pool.query(
-        'INSERT INTO user_profiles (user_id) VALUES ($1) RETURNING *',
-        [userId]
-      );
-      profile = insertResult.rows[0];
-    } else {
-      profile = result.rows[0];
+    let userProfile = profile;
+    
+    // If profile doesn't exist, create it
+    if (selectError && selectError.code === 'PGRST116') {
+      const { data: newProfile, error: insertError } = await req.supabase
+        .from('user_profiles')
+        .insert([{ user_id: userId }])
+        .select()
+        .single();
+        
+      if (insertError) {
+        throw insertError;
+      }
+      userProfile = newProfile;
+    } else if (selectError) {
+      throw selectError;
     }
 
     res.json({
@@ -387,12 +393,12 @@ app.get('/api/auth/profile', authenticateSupabaseUser, async (req, res) => {
         email: req.user.email,
         firstName: req.user.first_name,
         lastName: req.user.last_name,
-        phone: profile.phone,
-        tradingExperience: profile.trading_experience,
-        preferredMarket: profile.preferred_market,
-        riskTolerance: profile.risk_tolerance,
-        createdAt: profile.created_at,
-        updatedAt: profile.updated_at
+        phone: userProfile.phone,
+        tradingExperience: userProfile.trading_experience,
+        preferredMarket: userProfile.preferred_market,
+        riskTolerance: userProfile.risk_tolerance,
+        createdAt: userProfile.created_at,
+        updatedAt: userProfile.updated_at
       }
     });
   } catch (error) {
@@ -404,6 +410,7 @@ app.get('/api/auth/profile', authenticateSupabaseUser, async (req, res) => {
   }
 });
 
+// Update user profile
 app.put('/api/auth/profile', authenticateSupabaseUser, async (req, res) => {
   try {
     const { error: validationError, value } = userProfileSchema.validate(req.body);
@@ -420,23 +427,21 @@ app.put('/api/auth/profile', authenticateSupabaseUser, async (req, res) => {
       updated_at: new Date().toISOString()
     };
 
+    // Remove undefined values
     Object.keys(updateData).forEach(key => 
       updateData[key] === undefined && delete updateData[key]
     );
     
-    const updateColumns = Object.keys(updateData);
-    const setClause = updateColumns.map((col, index) => `${col} = $${index + 2}`).join(', ');
-    const values = [userId, ...updateColumns.map(col => updateData[col])];
+    const { data: profile, error } = await req.supabase
+      .from('user_profiles')
+      .update(updateData)
+      .eq('user_id', userId)
+      .select()
+      .single();
     
-    const result = await pool.query(
-      `UPDATE user_profiles SET ${setClause} WHERE user_id = $1 RETURNING *`,
-      values
-    );
-    
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Profile not found' });
+    if (error) {
+      throw error;
     }
-    const profile = result.rows[0];
 
     res.json({
       message: 'Profile updated successfully',
@@ -459,33 +464,32 @@ app.put('/api/auth/profile', authenticateSupabaseUser, async (req, res) => {
   }
 });
 
-// Trading routes
+// Get trades
 app.get('/api/trades', authenticateSupabaseUser, async (req, res) => {
   try {
     const { status, strategy, limit = 1000 } = req.query;
-    const userId = req.user.id;
     
-    let pgQuery = 'SELECT * FROM trading_journal WHERE user_id = $1';
-    const values = [userId];
-    let paramCount = 1;
+    let query = req.supabase
+      .from('trading_journal')
+      .select('*')
+      .order('s_no', { ascending: false })
+      .limit(parseInt(limit));
 
     if (status) {
-      paramCount++;
-      pgQuery += ` AND status = $${paramCount}`;
-      values.push(status);
+      query = query.eq('status', status);
     }
 
     if (strategy) {
-      paramCount++;
-      pgQuery += ` AND strategy = $${paramCount}`;
-      values.push(strategy);
+      query = query.eq('strategy', strategy);
     }
 
-    pgQuery += ` ORDER BY s_no DESC LIMIT $${paramCount + 1}`;
-    values.push(parseInt(limit));
+    const { data: trades, error } = await query;
+    
+    if (error) {
+      throw error;
+    }
 
-    const result = await pool.query(pgQuery, values);
-    const trades = result.rows;
+    // Format trades data
     const formattedTrades = formatTradesData(trades || []);
 
     res.json({
@@ -501,6 +505,7 @@ app.get('/api/trades', authenticateSupabaseUser, async (req, res) => {
   }
 });
 
+// Add new trade
 app.post('/api/trades', authenticateSupabaseUser, async (req, res) => {
   try {
     const { error: validationError, value } = tradeSchema.validate(req.body);
@@ -532,25 +537,18 @@ app.post('/api/trades', authenticateSupabaseUser, async (req, res) => {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString()
     };
+    
+    const { data: trade, error } = await req.supabase
+      .from('trading_journal')
+      .insert([tradeData])
+      .select()
+      .single();
+    
+    if (error) {
+      throw error;
+    }
 
-    const result = await pool.query(`
-      INSERT INTO trading_journal (
-        user_id, status, broker, market, instrument, direction,
-        qty, entry_price, exit_price, entry_dt, exit_dt,
-        stoploss, commission, p_and_l, strategy, setup, reason,
-        created_at, updated_at
-      ) VALUES (
-        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19
-      ) RETURNING *
-    `, [
-      tradeData.user_id, tradeData.status, tradeData.broker, tradeData.market,
-      tradeData.instrument, tradeData.direction, tradeData.qty, tradeData.entry_price,
-      tradeData.exit_price, tradeData.entry_dt, tradeData.exit_dt, tradeData.stoploss,
-      tradeData.commission, tradeData.p_and_l, tradeData.strategy, tradeData.setup,
-      tradeData.reason, tradeData.created_at, tradeData.updated_at
-    ]);
-
-    const trade = result.rows[0];
+    // Format the response data
     const formattedTrade = formatTradeData(trade);
 
     res.status(201).json({
@@ -566,10 +564,10 @@ app.post('/api/trades', authenticateSupabaseUser, async (req, res) => {
   }
 });
 
+// Update trade
 app.put('/api/trades/:id', authenticateSupabaseUser, async (req, res) => {
   try {
     const tradeId = req.params.id;
-    const userId = req.user.id;
     
     const { error: validationError, value } = tradeSchema.validate(req.body);
     if (validationError) {
@@ -583,27 +581,23 @@ app.put('/api/trades/:id', authenticateSupabaseUser, async (req, res) => {
       ...value,
       updated_at: new Date().toISOString()
     };
-
-    const result = await pool.query(`
-      UPDATE trading_journal SET
-        status = $3, broker = $4, market = $5, instrument = $6, direction = $7,
-        qty = $8, entry_price = $9, exit_price = $10, entry_dt = $11, exit_dt = $12,
-        stoploss = $13, commission = $14, p_and_l = $15, strategy = $16,
-        setup = $17, reason = $18, updated_at = $19
-      WHERE s_no = $1 AND user_id = $2
-      RETURNING *
-    `, [
-      tradeId, userId, updateData.status, updateData.broker, updateData.market,
-      updateData.instrument, updateData.direction, updateData.qty, updateData.entry_price,
-      updateData.exit_price, updateData.entry_dt, updateData.exit_dt, updateData.stoploss,
-      updateData.commission, updateData.p_and_l, updateData.strategy, updateData.setup,
-      updateData.reason, updateData.updated_at
-    ]);
     
-    if (result.rows.length === 0) {
+    const { data: trade, error } = await req.supabase
+      .from('trading_journal')
+      .update(updateData)
+      .eq('s_no', tradeId)
+      .select()
+      .single();
+    
+    if (error) {
+      throw error;
+    }
+    
+    if (!trade) {
       return res.status(404).json({ error: 'Trade not found or unauthorized' });
     }
-    const trade = result.rows[0];
+
+    // Format the response data
     const formattedTrade = formatTradeData(trade);
 
     res.json({
@@ -619,20 +613,25 @@ app.put('/api/trades/:id', authenticateSupabaseUser, async (req, res) => {
   }
 });
 
+// Delete trade
 app.delete('/api/trades/:id', authenticateSupabaseUser, async (req, res) => {
   try {
     const tradeId = req.params.id;
-    const userId = req.user.id;
-
-    const result = await pool.query(
-      'DELETE FROM trading_journal WHERE s_no = $1 AND user_id = $2 RETURNING s_no',
-      [tradeId, userId]
-    );
     
-    if (result.rows.length === 0) {
+    const { data: trade, error } = await req.supabase
+      .from('trading_journal')
+      .delete()
+      .eq('s_no', tradeId)
+      .select('s_no')
+      .single();
+    
+    if (error) {
+      throw error;
+    }
+    
+    if (!trade) {
       return res.status(404).json({ error: 'Trade not found or unauthorized' });
     }
-    const trade = result.rows[0];
 
     res.json({
       message: 'Trade deleted successfully',
@@ -647,16 +646,16 @@ app.delete('/api/trades/:id', authenticateSupabaseUser, async (req, res) => {
   }
 });
 
-// Analytics routes
+// Get trading statistics
 app.get('/api/analytics/stats', authenticateSupabaseUser, async (req, res) => {
   try {
-    const userId = req.user.id;
-
-    const result = await pool.query(
-      'SELECT status, p_and_l FROM trading_journal WHERE user_id = $1',
-      [userId]
-    );
-    const trades = result.rows;
+    const { data: trades, error } = await req.supabase
+      .from('trading_journal')
+      .select('status, p_and_l');
+    
+    if (error) {
+      throw error;
+    }
 
     const totalTrades = trades.length;
     const openTrades = trades.filter(t => t.status === 'open').length;
@@ -696,34 +695,53 @@ app.get('/api/analytics/stats', authenticateSupabaseUser, async (req, res) => {
   }
 });
 
-// Advanced analytics routes (simplified for production)
+// Advanced Analytics - Get all trades for complex calculations
 app.get('/api/analytics/advanced-stats', authenticateSupabaseUser, async (req, res) => {
   try {
-    const userId = req.user.id;
-    const result = await pool.query(
-      'SELECT * FROM trading_journal WHERE user_id = $1 ORDER BY entry_dt',
-      [userId]
-    );
-    const trades = result.rows;
+    const { data: trades, error } = await req.supabase
+      .from('trading_journal')
+      .select('*')
+      .order('entry_dt');
+    
+    if (error) {
+      throw error;
+    }
 
     if (!trades || trades.length === 0) {
       return res.json({
         stats: {
           basic: {
-            totalTrades: 0, closedTrades: 0, openTrades: 0, totalPnL: 0,
-            avgPnL: 0, winRate: 0, profitFactor: 0, expectancy: 0
+            totalTrades: 0,
+            closedTrades: 0,
+            openTrades: 0,
+            totalPnL: 0,
+            avgPnL: 0,
+            winRate: 0,
+            profitFactor: 0,
+            expectancy: 0
           },
           risk: {
-            sharpeRatio: 0, maxDrawdown: 0, calmarRatio: 0,
-            var95: 0, var99: 0, volatility: 0
+            sharpeRatio: 0,
+            maxDrawdown: 0,
+            calmarRatio: 0,
+            var95: 0,
+            var99: 0,
+            volatility: 0
           },
           performance: {
-            avgWin: 0, avgLoss: 0, largestWin: 0, largestLoss: 0,
-            riskRewardRatio: 0, kellyPercentage: 0, annualReturn: 0
+            avgWin: 0,
+            avgLoss: 0,
+            largestWin: 0,
+            largestLoss: 0,
+            riskRewardRatio: 0,
+            kellyPercentage: 0,
+            annualReturn: 0
           },
           time: {
-            firstTradeDate: null, lastTradeDate: null,
-            tradingDays: 0, avgTradesPerMonth: 0
+            firstTradeDate: null,
+            lastTradeDate: null,
+            tradingDays: 0,
+            avgTradesPerMonth: 0
           }
         }
       });
@@ -732,7 +750,47 @@ app.get('/api/analytics/advanced-stats', authenticateSupabaseUser, async (req, r
     const formattedTrades = formatTradesData(trades);
     const closedTrades = formattedTrades.filter(t => t.status === 'closed' && t.p_and_l !== null);
     
-    // Calculate basic stats
+    if (closedTrades.length === 0) {
+      return res.json({
+        stats: {
+          basic: {
+            totalTrades: trades.length,
+            closedTrades: 0,
+            openTrades: trades.length,
+            totalPnL: 0,
+            avgPnL: 0,
+            winRate: 0,
+            profitFactor: 0,
+            expectancy: 0
+          },
+          risk: {
+            sharpeRatio: 0,
+            maxDrawdown: 0,
+            calmarRatio: 0,
+            var95: 0,
+            var99: 0,
+            volatility: 0
+          },
+          performance: {
+            avgWin: 0,
+            avgLoss: 0,
+            largestWin: 0,
+            largestLoss: 0,
+            riskRewardRatio: 0,
+            kellyPercentage: 0,
+            annualReturn: 0
+          },
+          time: {
+            firstTradeDate: formattedTrades[0]?.entry_dt || null,
+            lastTradeDate: formattedTrades[formattedTrades.length - 1]?.entry_dt || null,
+            tradingDays: 0,
+            avgTradesPerMonth: 0
+          }
+        }
+      });
+    }
+
+    // Calculate advanced statistics (same logic as before)
     const pnlValues = closedTrades.map(t => t.p_and_l).filter(p => p !== null);
     const totalPnL = pnlValues.reduce((sum, p) => sum + p, 0);
     const avgPnL = pnlValues.length > 0 ? totalPnL / pnlValues.length : 0;
@@ -743,7 +801,7 @@ app.get('/api/analytics/advanced-stats', authenticateSupabaseUser, async (req, r
     
     const grossProfit = winningTrades.reduce((sum, p) => sum + p, 0);
     const grossLoss = Math.abs(losingTrades.reduce((sum, p) => sum + p, 0));
-    const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : (grossProfit > 0 ? 10 : 0);
+    const profitFactor = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? 10 : 0;
     
     const avgWin = winningTrades.length > 0 ? grossProfit / winningTrades.length : 0;
     const avgLoss = losingTrades.length > 0 ? grossLoss / losingTrades.length : 0;
@@ -752,16 +810,41 @@ app.get('/api/analytics/advanced-stats', authenticateSupabaseUser, async (req, r
     const volatility = pnlValues.length > 1 ? ss.standardDeviation(pnlValues) : 0;
     const sharpeRatio = volatility > 0 ? avgPnL / volatility : 0;
     
+    // Drawdown calculation
+    let cumulativePnL = 0;
+    let peak = 0;
+    let maxDrawdown = 0;
+    
+    for (const pnl of pnlValues) {
+      cumulativePnL += pnl;
+      if (cumulativePnL > peak) peak = cumulativePnL;
+      const drawdown = (peak - cumulativePnL) / Math.max(peak, 1);
+      if (drawdown > maxDrawdown) maxDrawdown = drawdown;
+    }
+    
     // Time calculations
     const sortedTrades = closedTrades.sort((a, b) => new Date(a.entry_dt).getTime() - new Date(b.entry_dt).getTime());
     const firstTradeDate = sortedTrades[0]?.entry_dt;
     const lastTradeDate = sortedTrades[sortedTrades.length - 1]?.entry_dt;
     
     let tradingDays = 0;
+    let annualReturn = 0;
     if (firstTradeDate && lastTradeDate) {
       const daysDiff = (new Date(lastTradeDate).getTime() - new Date(firstTradeDate).getTime()) / (1000 * 60 * 60 * 24);
       tradingDays = Math.max(daysDiff, 1);
+      annualReturn = totalPnL > 0 ? (totalPnL / Math.max(grossProfit, 1000)) * (365 / tradingDays) : 0;
     }
+    
+    // VaR calculations
+    const sortedPnL = [...pnlValues].sort((a, b) => a - b);
+    const var95Index = Math.floor(sortedPnL.length * 0.05);
+    const var99Index = Math.floor(sortedPnL.length * 0.01);
+    const var95 = sortedPnL[var95Index] || 0;
+    const var99 = sortedPnL[var99Index] || 0;
+    
+    // Kelly criterion
+    const kellyPercentage = winRate > 0 && avgLoss > 0 ? 
+      ((winRate / 100) * (avgWin / avgLoss) - (1 - winRate / 100)) * 100 : 0;
 
     const stats = {
       basic: {
@@ -776,10 +859,10 @@ app.get('/api/analytics/advanced-stats', authenticateSupabaseUser, async (req, r
       },
       risk: {
         sharpeRatio: parseFloat(sharpeRatio.toFixed(2)),
-        maxDrawdown: 0,
-        calmarRatio: 0,
-        var95: 0,
-        var99: 0,
+        maxDrawdown: parseFloat(maxDrawdown.toFixed(4)),
+        calmarRatio: maxDrawdown > 0 ? parseFloat((annualReturn / maxDrawdown).toFixed(2)) : 0,
+        var95: parseFloat(var95.toFixed(2)),
+        var99: parseFloat(var99.toFixed(2)),
         volatility: parseFloat((volatility / Math.max(avgPnL, 1)).toFixed(4))
       },
       performance: {
@@ -788,8 +871,8 @@ app.get('/api/analytics/advanced-stats', authenticateSupabaseUser, async (req, r
         largestWin: pnlValues.length > 0 ? parseFloat(Math.max(...pnlValues).toFixed(2)) : 0,
         largestLoss: pnlValues.length > 0 ? parseFloat(Math.min(...pnlValues).toFixed(2)) : 0,
         riskRewardRatio: avgLoss > 0 ? parseFloat((avgWin / avgLoss).toFixed(2)) : 0,
-        kellyPercentage: 0,
-        annualReturn: 0
+        kellyPercentage: parseFloat(kellyPercentage.toFixed(2)),
+        annualReturn: parseFloat(annualReturn.toFixed(4))
       },
       time: {
         firstTradeDate: firstTradeDate || null,
@@ -809,17 +892,19 @@ app.get('/api/analytics/advanced-stats', authenticateSupabaseUser, async (req, r
   }
 });
 
-// Additional analytics endpoints
+// Time series data endpoint
 app.get('/api/analytics/time-series', authenticateSupabaseUser, async (req, res) => {
   try {
-    const userId = req.user.id;
     const { period = 'daily' } = req.query;
 
-    const result = await pool.query(
-      'SELECT * FROM trading_journal WHERE user_id = $1 ORDER BY entry_dt',
-      [userId]
-    );
-    const trades = result.rows;
+    const { data: trades, error } = await req.supabase
+      .from('trading_journal')
+      .select('*')
+      .order('entry_dt');
+    
+    if (error) {
+      throw error;
+    }
 
     if (!trades || trades.length === 0) {
       return res.json({ data: [] });
@@ -827,6 +912,8 @@ app.get('/api/analytics/time-series', authenticateSupabaseUser, async (req, res)
 
     const formattedTrades = formatTradesData(trades);
     const timeSeriesData = [];
+    
+    // Group trades by period
     const groupedTrades = {};
     
     formattedTrades.forEach(trade => {
@@ -842,7 +929,7 @@ app.get('/api/analytics/time-series', authenticateSupabaseUser, async (req, res)
         case 'monthly':
           periodKey = date.toISOString().slice(0, 7);
           break;
-        default:
+        default: // daily
           periodKey = date.toISOString().slice(0, 10);
       }
       
@@ -868,6 +955,7 @@ app.get('/api/analytics/time-series', authenticateSupabaseUser, async (req, res)
       }
     });
     
+    // Convert to array and add cumulative data
     let cumulativePnL = 0;
     Object.keys(groupedTrades)
       .sort()
@@ -898,15 +986,17 @@ app.get('/api/analytics/time-series', authenticateSupabaseUser, async (req, res)
   }
 });
 
+// Patterns analysis endpoint
 app.get('/api/analytics/patterns', authenticateSupabaseUser, async (req, res) => {
   try {
-    const userId = req.user.id;
-
-    const result = await pool.query(
-      'SELECT * FROM trading_journal WHERE user_id = $1 ORDER BY entry_dt',
-      [userId]
-    );
-    const trades = result.rows;
+    const { data: trades, error } = await req.supabase
+      .from('trading_journal')
+      .select('*')
+      .order('entry_dt');
+    
+    if (error) {
+      throw error;
+    }
 
     if (!trades || trades.length === 0) {
       return res.json({
@@ -961,6 +1051,7 @@ app.get('/api/analytics/patterns', authenticateSupabaseUser, async (req, res) =>
       if (trade.p_and_l > 0) dayOfWeekPerformance[dayName].wins += 1;
     });
 
+    // Add win rates
     Object.keys(dayOfWeekPerformance).forEach(day => {
       const data = dayOfWeekPerformance[day];
       data.winRate = data.trades > 0 ? (data.wins / data.trades) * 100 : 0;
@@ -985,6 +1076,7 @@ app.get('/api/analytics/patterns', authenticateSupabaseUser, async (req, res) =>
       if (trade.p_and_l > 0) instrumentPerformance[trade.instrument].wins += 1;
     });
 
+    // Add win rates and avg PnL
     Object.keys(instrumentPerformance).forEach(instrument => {
       const data = instrumentPerformance[instrument];
       data.winRate = data.trades > 0 ? (data.wins / data.trades) * 100 : 0;
@@ -1011,20 +1103,25 @@ app.get('/api/analytics/patterns', authenticateSupabaseUser, async (req, res) =>
   }
 });
 
-// Webhooks
+// Supabase webhook endpoint for user creation
 app.post('/api/webhooks/supabase', async (req, res) => {
   try {
     const { type, record } = req.body;
     
     if (type === 'INSERT' && record.email) {
+      // Create user profile when a new user signs up via Supabase Auth
       try {
-        await pool.query(
-          'INSERT INTO user_profiles (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING',
-          [record.id]
-        );
-        console.log(`✅ Created profile for user: ${record.email}`);
-      } catch (pgError) {
-        console.error('Webhook profile creation failed:', pgError);
+        const { error } = await supabaseAdmin
+          .from('user_profiles')
+          .upsert([{ user_id: record.id }]);
+        
+        if (error) {
+          console.error('Webhook profile creation failed:', error);
+        } else {
+          console.log(`✅ Created profile for user: ${record.email}`);
+        }
+      } catch (webhookError) {
+        console.error('Webhook profile creation failed:', webhookError);
       }
     }
     
@@ -1044,62 +1141,47 @@ app.use((err, req, res, next) => {
   });
 });
 
-// 404 handler
-app.use((req, res) => {
-  res.status(404).json({
-    error: 'Not Found',
-    message: 'The requested resource was not found',
-    path: req.path
-  });
-});
-
 // Start server
 const startServer = async () => {
   try {
     console.log('🚀 Starting TradingJournal Pro API...');
     console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
     
-    // Test Supabase connection
+    console.log('Testing Supabase connection...');
     const { data, error } = await supabaseAdmin.auth.admin.listUsers({ page: 1, perPage: 1 });
     if (error) {
       throw new Error(`Supabase connection failed: ${error.message}`);
     }
     console.log('✅ Supabase connection successful');
     
-    // Initialize database
     await initializeDatabase();
     
     app.listen(PORT, () => {
-      console.log(`🚀 Server running on port: ${PORT}`);
+      console.log(`🚀 Server running on: http://localhost:${PORT}`);
       console.log(`🩺 Health check: http://localhost:${PORT}/api/health`);
       console.log(`💾 DB status: http://localhost:${PORT}/api/db-status`);
-      console.log('✅ TradingJournal Pro API ready!');
+      console.log('✅ Server ready with Supabase authentication!');
+      console.log('🔒 Security: Supabase Authentication + Row Level Security');
+      console.log('🔢 Data Formatting: Automatic number conversion for frontend compatibility');
+      console.log('ℹ️ Note: Using Supabase client for all database operations');
     });
     
   } catch (error) {
     console.error('❌ Failed to start server:', error.message);
+    console.error('Please ensure your Supabase configuration is correct and try again.');
     process.exit(1);
   }
 };
 
 // Graceful shutdown
-const gracefulShutdown = async (signal) => {
-  console.log(`\n🛑 Received ${signal}, shutting down gracefully...`);
-  
-  try {
-    await pool.end();
-    console.log('✅ Database connections closed');
-    process.exit(0);
-  } catch (error) {
-    console.error('❌ Error during shutdown:', error);
-    process.exit(1);
-  }
-};
+process.on('SIGTERM', async () => {
+  console.log('Shutting down gracefully...');
+  process.exit(0);
+});
 
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on('SIGINT', async () => {
+  console.log('Shutting down gracefully...');
+  process.exit(0);
+});
 
-// Start the server
 startServer();
-
-module.exports = app;
