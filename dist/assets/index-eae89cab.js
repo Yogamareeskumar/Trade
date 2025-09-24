@@ -1,0 +1,10 @@
+import{r as l}from"./vendor-b2a7ed32.js";(function(){const r=document.createElement("link").relList;if(r&&r.supports&&r.supports("modulepreload"))return;for(const e of document.querySelectorAll('link[rel="modulepreload"]'))o(e);new MutationObserver(e=>{for(const t of e)if(t.type==="childList")for(const i of t.addedNodes)i.tagName==="LINK"&&i.rel==="modulepreload"&&o(i)}).observe(document,{childList:!0,subtree:!0});function n(e){const t={};return e.integrity&&(t.integrity=e.integrity),e.referrerPolicy&&(t.referrerPolicy=e.referrerPolicy),e.crossOrigin==="use-credentials"?t.credentials="include":e.crossOrigin==="anonymous"?t.credentials="omit":t.credentials="same-origin",t}function o(e){if(e.ep)return;e.ep=!0;const t=n(e);fetch(e.href,t)}})();var u={exports:{}},f={};/**
+ * @license React
+ * react-jsx-runtime.production.min.js
+ *
+ * Copyright (c) Facebook, Inc. and its affiliates.
+ *
+ * This source code is licensed under the MIT license found in the
+ * LICENSE file in the root directory of this source tree.
+ */var d=l,a=Symbol.for("react.element"),p=Symbol.for("react.fragment"),m=Object.prototype.hasOwnProperty,y=d.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED.ReactCurrentOwner,b={key:!0,ref:!0,__self:!0,__source:!0};function c(s,r,n){var o,e={},t=null,i=null;n!==void 0&&(t=""+n),r.key!==void 0&&(t=""+r.key),r.ref!==void 0&&(i=r.ref);for(o in r)m.call(r,o)&&!b.hasOwnProperty(o)&&(e[o]=r[o]);if(s&&s.defaultProps)for(o in r=s.defaultProps,r)e[o]===void 0&&(e[o]=r[o]);return{$$typeof:a,type:s,key:t,ref:i,props:e,_owner:y.current}}f.Fragment=p;f.jsx=c;f.jsxs=c;u.exports=f;var g=u.exports;const x=l.forwardRef(({className:s="",...r},n)=>g.jsx("textarea",{className:`flex min-h-20 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${s}`,ref:n,...r}));x.displayName="Textarea";
+//# sourceMappingURL=index-eae89cab.js.map
